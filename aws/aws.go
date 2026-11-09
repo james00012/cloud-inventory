@@ -39,7 +39,9 @@ func (s Scope) wants(region string) bool {
 }
 
 // faultOf reads an AWS error into the shape every provider shares, so a
-// consumer never matches on an SDK's own error types or on a string.
+// consumer never matches on an SDK's own error types or on a string. The codes
+// are the ones EC2 returns; a second resource type here adds its service's own
+// rather than assuming these cover it.
 func faultOf(err error) cloudinv.Fault {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {

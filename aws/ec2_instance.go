@@ -171,13 +171,25 @@ func (e *EC2Instances) Delete(ctx context.Context, id cloudinv.ID) error {
 	// The contract says a delete does not return until the resource is gone,
 	// and TerminateInstances returns while the instance is still shutting down.
 	waiter := ec2.NewInstanceTerminatedWaiter(client)
-	return waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceID}}, terminateWait)
+	if err := waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceID}}, terminateWait); err != nil {
+		// EC2 stops answering for an instance once it is reaped, which can
+		// happen between the terminate and the first poll. That is the state
+		// the caller wanted, not a failed delete.
+		if faultOf(err) == cloudinv.FaultNotFound {
+			return nil
+		}
+		return fmt.Errorf("waiting for %s in %s to terminate: %w", instanceID, region, err)
+	}
+	return nil
 }
 
 // terminateWait bounds the wait for an instance to reach terminated, so a stuck
 // instance fails the delete rather than holding the run forever.
 const terminateWait = 10 * time.Minute
 
+// Create takes a scope it does not read: the credentials come from the
+// constructor and the region from the spec. It stays in the signature because
+// Creator is one interface across providers, and GCP reads the project from it.
 func (e *EC2Instances) Create(ctx context.Context, scope Scope, spec EC2InstanceSpec) (EC2Instance, error) {
 	if spec.RunInstancesInput == nil {
 		return EC2Instance{}, fmt.Errorf("the spec carries no RunInstancesInput")

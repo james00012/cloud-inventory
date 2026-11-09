@@ -224,7 +224,15 @@ func shortName(name string) string {
 
 const cloudRunOperationWait = 30 * time.Second
 
+// operationCeiling bounds the whole wait, not one call of it.
+const operationCeiling = 10 * time.Minute
+
 func (c *CloudRunServices) wait(ctx context.Context, operation *runv2.GoogleLongrunningOperation) error {
+	// A ceiling, so a stuck operation fails its call rather than holding the
+	// run forever on a context the consumer never gave a deadline.
+	ctx, cancel := context.WithTimeout(ctx, operationCeiling)
+	defer cancel()
+
 	for operation != nil && !operation.Done {
 		if err := ctx.Err(); err != nil {
 			return err

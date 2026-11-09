@@ -124,3 +124,26 @@ func TestIncompleteWithNoGapsHasNoCause(t *testing.T) {
 type probeError struct{ msg string }
 
 func (p *probeError) Error() string { return p.msg }
+
+// A cancelled fan-out keeps what the earlier parts already answered, or a
+// partial read turns into an empty one, which is what Incomplete exists to
+// prevent.
+func TestFanOutKeepsWhatItReadBeforeCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	read := func(ctx context.Context, part string) ([]string, error) {
+		if part == "two" {
+			cancel()
+		}
+		return []string{part}, nil
+	}
+
+	found, incomplete, err := FanOut(ctx, []string{"one", "two", "three", "four"},
+		func(error) Fault { return FaultUnknown }, read)
+	require.ErrorIs(t, err, context.Canceled)
+
+	assert.Equal(t, []string{"one", "two"}, found, "the parts already read were discarded")
+	assert.Contains(t, incomplete.String(), "three")
+	assert.Contains(t, incomplete.String(), "four")
+}

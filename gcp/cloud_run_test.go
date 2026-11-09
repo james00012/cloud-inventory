@@ -295,6 +295,34 @@ func TestListReportsALocationTheProjectDoesNotOffer(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Empty(t, asked)
-	assert.True(t, incomplete.Any())
 	assert.Contains(t, incomplete.String(), "us-centrall")
+
+	// Total is what a consumer branches on, so a run narrowed to one
+	// misspelled location has to read as a run that learned nothing.
+	assert.True(t, incomplete.Total())
+}
+
+// Get and Create return the zero value beside an error, and a destroyer's
+// error path reads the name off it, so the contract methods must not panic.
+func TestTheZeroServiceAnswersItsContractWithoutPanicking(t *testing.T) {
+	t.Parallel()
+
+	var zero CloudRunService
+	assert.Empty(t, zero.DisplayName())
+	assert.Nil(t, zero.Tags())
+	assert.True(t, zero.CreatedAt().IsZero())
+	assert.Equal(t, "cloud-run-service", zero.ResourceType())
+}
+
+// A spec with no body would reach the generated client as a nil request.
+func TestCreateRefusesASpecWithNoBody(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeCloudRun(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Error("Create called the API with no body")
+	})
+
+	_, err := client.Create(context.Background(), Scope{ProjectID: "p"},
+		CloudRunServiceSpec{ServiceID: "web", Location: "us-central1"})
+	require.Error(t, err)
 }
