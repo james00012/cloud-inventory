@@ -67,6 +67,10 @@ type CloudRunServiceSpec struct {
 
 // CloudRunServices is the resource type's four calls.
 type CloudRunServices struct {
+	// ceiling bounds a whole operation wait. It is a field so a test can
+	// drive the expiry; nothing else sets it.
+	ceiling time.Duration
+
 	// locations is the v1 client, because listing a project's Cloud Run
 	// regions is a v1 call. The v2 API has no equivalent.
 	locations *runv1.APIService
@@ -78,7 +82,7 @@ type CloudRunServices struct {
 // NewCloudRunServicesWithClients takes clients the caller built, which is how a
 // test drives this against an httptest server.
 func NewCloudRunServicesWithClients(locations *runv1.APIService, services *runv2.Service) *CloudRunServices {
-	return &CloudRunServices{locations: locations, services: services}
+	return &CloudRunServices{locations: locations, services: services, ceiling: operationCeiling}
 }
 
 func NewCloudRunServices(ctx context.Context) (*CloudRunServices, error) {
@@ -90,7 +94,7 @@ func NewCloudRunServices(ctx context.Context) (*CloudRunServices, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cloud run client: %w", err)
 	}
-	return &CloudRunServices{locations: locations, services: services}, nil
+	return &CloudRunServices{locations: locations, services: services, ceiling: operationCeiling}, nil
 }
 
 // List fans out over the locations the scope asks for. The v2 list call refuses
@@ -230,17 +234,17 @@ const operationCeiling = 10 * time.Minute
 func (c *CloudRunServices) wait(ctx context.Context, operation *runv2.GoogleLongrunningOperation) error {
 	// A ceiling, so a stuck operation fails its call rather than holding the
 	// run forever on a context the consumer never gave a deadline.
-	ctx, cancel := context.WithTimeout(ctx, operationCeiling)
+	ctx, cancel := context.WithTimeout(ctx, c.ceiling)
 	defer cancel()
 
 	for operation != nil && !operation.Done {
 		if err := ctx.Err(); err != nil {
-			return err
+			return fmt.Errorf("waiting for %s to finish: %w", operation.Name, err)
 		}
 		request := &runv2.GoogleLongrunningWaitOperationRequest{Timeout: fmt.Sprintf("%ds", int(cloudRunOperationWait.Seconds()))}
 		answer, err := c.services.Projects.Locations.Operations.Wait(operation.Name, request).Context(ctx).Do()
 		if err != nil {
-			return fmt.Errorf("waiting for the operation to finish: %w", err)
+			return fmt.Errorf("waiting for %s to finish: %w", operation.Name, err)
 		}
 		operation = answer
 	}

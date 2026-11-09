@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	cloudinv "github.com/james00012/cloud-inventory"
 	"github.com/stretchr/testify/assert"
@@ -325,4 +326,25 @@ func TestCreateRefusesASpecWithNoBody(t *testing.T) {
 	_, err := client.Create(context.Background(), Scope{ProjectID: "p"},
 		CloudRunServiceSpec{ServiceID: "web", Location: "us-central1"})
 	require.Error(t, err)
+}
+
+// An operation that never finishes must fail its call rather than hold the run
+// forever, and the error has to name the operation the way the AWS side names
+// its instance.
+func TestWaitGivesUpOnAnOperationThatNeverFinishes(t *testing.T) {
+	t.Parallel()
+
+	client := newFakeCloudRun(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(&runv2.GoogleLongrunningOperation{
+			Name: "projects/p/locations/us-central1/operations/stuck", Done: false,
+		}))
+	})
+	client.ceiling = 50 * time.Millisecond
+
+	err := client.Delete(context.Background(),
+		cloudinv.ID("projects/p/locations/us-central1/services/web"))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Contains(t, err.Error(), "operations/stuck")
 }
