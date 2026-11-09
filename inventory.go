@@ -1,7 +1,6 @@
-// Package cloudinv holds the mechanism of talking to a cloud: how to create,
-// list, get and delete one resource type, in plain Go values. It holds no
-// policy. Which resources to act on, in what order, with what parallelism and
-// what to report are decisions its consumers make.
+// Package cloudinv holds the cloud-facing half of an inventory: create, list,
+// get and delete for one resource type, in plain Go values. Which resources to
+// act on, in what order and what to report belong to its consumers.
 package cloudinv
 
 import (
