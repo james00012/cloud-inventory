@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	cloudinv "github.com/james00012/cloud-inventory"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
+	runv1 "google.golang.org/api/run/v1"
 	runv2 "google.golang.org/api/run/v2"
 )
 
@@ -153,4 +155,146 @@ func TestLocationOfReadsTheNameGcpAnswersWith(t *testing.T) {
 
 	assert.Equal(t, "us-central1", locationOf("projects/p/locations/us-central1/services/one"))
 	assert.Equal(t, "", locationOf("nonsense"))
+}
+
+// newFakeCloudRunWithLocations stands both API versions up on one server, so a
+// test can drive List rather than only the single-service calls.
+func newFakeCloudRunWithLocations(t *testing.T, handler http.HandlerFunc) *CloudRunServices {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	v1, err := runv1.NewService(context.Background(),
+		option.WithEndpoint(server.URL), option.WithoutAuthentication())
+	require.NoError(t, err)
+	v2, err := runv2.NewService(context.Background(),
+		option.WithEndpoint(server.URL), option.WithoutAuthentication())
+	require.NoError(t, err)
+
+	return NewCloudRunServicesWithClients(v1, v2)
+}
+
+// cloudRunServer answers the location list and then each location's services,
+// refusing the locations a test names.
+func cloudRunServer(t *testing.T, locations []string, refuse map[string]int, asked *[]string) http.HandlerFunc {
+	t.Helper()
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.HasSuffix(r.URL.Path, "/locations") {
+			out := &runv1.ListLocationsResponse{}
+			for _, location := range locations {
+				out.Locations = append(out.Locations, &runv1.Location{LocationId: location})
+			}
+			require.NoError(t, json.NewEncoder(w).Encode(out))
+			return
+		}
+
+		location := locationOf(strings.TrimSuffix(r.URL.Path, "/services"))
+		*asked = append(*asked, location)
+
+		if code, refused := refuse[location]; refused {
+			w.WriteHeader(code)
+			require.NoError(t, json.NewEncoder(w).Encode(map[string]any{
+				"error": map[string]any{
+					"code": code, "message": "refused",
+					"details": []any{map[string]any{"reason": "SERVICE_DISABLED"}},
+				},
+			}))
+			return
+		}
+
+		require.NoError(t, json.NewEncoder(w).Encode(&runv2.GoogleCloudRunV2ListServicesResponse{
+			Services: []*runv2.GoogleCloudRunV2Service{{
+				Name: "projects/p/locations/" + location + "/services/one",
+			}},
+		}))
+	}
+}
+
+// A run narrowed to one location asks that location alone, since the v2 API
+// refuses a wildcard and every other location costs a call.
+func TestListAsksOnlyTheLocationsTheScopeNames(t *testing.T) {
+	t.Parallel()
+
+	var asked []string
+	client := newFakeCloudRunWithLocations(t, cloudRunServer(t, []string{"us-central1", "europe-west4"}, nil, &asked))
+
+	found, incomplete, err := client.List(context.Background(),
+		Scope{ProjectID: "p", Locations: []string{"europe-west4"}})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"europe-west4"}, asked)
+	require.Len(t, found, 1)
+	assert.Equal(t, "europe-west4", found[0].Location)
+	assert.False(t, incomplete.Any())
+}
+
+// An exclusion is read inside the scope, so an excluded location is never
+// asked and never counted among the locations the run depends on.
+func TestListNeverAsksAnExcludedLocation(t *testing.T) {
+	t.Parallel()
+
+	var asked []string
+	client := newFakeCloudRunWithLocations(t, cloudRunServer(t, []string{"us-central1", "europe-west4"}, nil, &asked))
+
+	found, incomplete, err := client.List(context.Background(),
+		Scope{ProjectID: "p", ExcludeLocations: []string{"europe-west4"}})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"us-central1"}, asked)
+	assert.Len(t, found, 1)
+	assert.Equal(t, 1, incomplete.Asked)
+}
+
+// One location refusing costs that location alone, and the fault says why.
+func TestListReportsTheLocationItCouldNotRead(t *testing.T) {
+	t.Parallel()
+
+	var asked []string
+	client := newFakeCloudRunWithLocations(t, cloudRunServer(t,
+		[]string{"us-central1", "europe-west4"}, map[string]int{"us-central1": 403}, &asked))
+
+	found, incomplete, err := client.List(context.Background(), Scope{ProjectID: "p"})
+	require.NoError(t, err)
+
+	assert.Len(t, found, 1)
+	assert.False(t, incomplete.Total())
+	assert.Contains(t, incomplete.String(), "us-central1 (api disabled)")
+	assert.Error(t, incomplete.Cause())
+}
+
+// Every location refusing is a run that learned nothing, which a consumer must
+// be able to tell from a project with no services.
+func TestListReportsAWhollyUnreadProject(t *testing.T) {
+	t.Parallel()
+
+	var asked []string
+	client := newFakeCloudRunWithLocations(t, cloudRunServer(t, []string{"us-central1", "europe-west4"},
+		map[string]int{"us-central1": 403, "europe-west4": 403}, &asked))
+
+	found, incomplete, err := client.List(context.Background(), Scope{ProjectID: "p"})
+	require.NoError(t, err)
+
+	assert.Empty(t, found)
+	assert.True(t, incomplete.Total())
+}
+
+// A location the caller named that the project does not offer is a gap, or a
+// misspelled location reads as an empty project.
+func TestListReportsALocationTheProjectDoesNotOffer(t *testing.T) {
+	t.Parallel()
+
+	var asked []string
+	client := newFakeCloudRunWithLocations(t, cloudRunServer(t, []string{"us-central1"}, nil, &asked))
+
+	_, incomplete, err := client.List(context.Background(),
+		Scope{ProjectID: "p", Locations: []string{"us-centrall"}})
+	require.NoError(t, err)
+
+	assert.Empty(t, asked)
+	assert.True(t, incomplete.Any())
+	assert.Contains(t, incomplete.String(), "us-centrall")
 }

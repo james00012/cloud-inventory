@@ -69,6 +69,18 @@ func (i Incomplete) Any() bool { return len(i.Gaps) > 0 }
 // present as an empty cloud.
 func (i Incomplete) Total() bool { return i.Asked > 0 && len(i.Gaps) == i.Asked }
 
+// Cause is one error behind the gaps, for a consumer that wraps this in its own
+// error with %w. Without it the provider's own message and the chain an
+// errors.As walks are both lost at the consumer's boundary.
+func (i Incomplete) Cause() error {
+	for _, gap := range i.Gaps {
+		if gap.Err != nil {
+			return gap.Err
+		}
+	}
+	return nil
+}
+
 func (i Incomplete) String() string {
 	parts := make([]string, 0, len(i.Gaps))
 	for _, gap := range i.Gaps {
@@ -135,11 +147,15 @@ func FanOut[T any](ctx context.Context, parts []string, fault func(error) Fault,
 	incomplete := Incomplete{Asked: len(parts)}
 
 	var found []T
-	for _, part := range parts {
-		// A cancelled caller stops asking rather than working through the rest
-		// of the list it had planned.
+	for i, part := range parts {
+		// A cancelled caller stops asking, and keeps what the earlier parts
+		// already answered: throwing those away would turn a partial read into
+		// an empty one, which is the confusion Incomplete exists to prevent.
 		if err := ctx.Err(); err != nil {
-			return nil, incomplete, err
+			for _, unread := range parts[i:] {
+				incomplete.Gaps = append(incomplete.Gaps, Gap{Scope: unread, Fault: FaultUnknown, Err: err})
+			}
+			return found, incomplete, err
 		}
 
 		answer, err := read(ctx, part)
@@ -151,4 +167,21 @@ func FanOut[T any](ctx context.Context, parts []string, fault func(error) Fault,
 	}
 
 	return found, incomplete, nil
+}
+
+// Unoffered records the parts a caller named that the provider does not offer.
+// Without it a run narrowed to a misspelled region reads as an empty cloud
+// rather than as a question nobody answered.
+func Unoffered(asked []string, offered map[string]bool) []Gap {
+	var gaps []Gap
+	for _, part := range asked {
+		if !offered[strings.ToLower(part)] {
+			gaps = append(gaps, Gap{
+				Scope: part,
+				Fault: FaultNotFound,
+				Err:   fmt.Errorf("the provider does not offer %s", part),
+			})
+		}
+	}
+	return gaps
 }

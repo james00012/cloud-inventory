@@ -76,43 +76,56 @@ type ec2API interface {
 
 // EC2Instances is the resource type's four calls.
 type EC2Instances struct {
-	// in makes the regional client. A test hands over a fake; a run hands over
-	// one built from the scope's config.
-	in func(scope Scope, region string) ec2API
+	// in makes the client for one region. Keying it by region alone is what
+	// stops a delete reaching the wrong region with the right instance id.
+	in func(region string) ec2API
 }
 
-func NewEC2Instances() *EC2Instances {
-	return &EC2Instances{in: func(scope Scope, region string) ec2API {
-		cfg := scope.Config.Copy()
-		cfg.Region = region
-		return ec2.NewFromConfig(cfg)
+// NewEC2Instances binds the type to one account's credentials. Get and Delete
+// take an id rather than a scope, so the credentials cannot arrive per call.
+func NewEC2Instances(cfg awssdk.Config) *EC2Instances {
+	return &EC2Instances{in: func(region string) ec2API {
+		regional := cfg.Copy()
+		regional.Region = region
+		return ec2.NewFromConfig(regional)
 	}}
 }
 
-// NewEC2InstancesWithClient takes a client a caller built, which is how a test
-// drives this without AWS.
-func NewEC2InstancesWithClient(client ec2API) *EC2Instances {
-	return &EC2Instances{in: func(Scope, string) ec2API { return client }}
+// NewEC2InstancesWithClients takes a client per region, which is how a test
+// drives this without AWS. It is a function of the region rather than one
+// client, so a fake answers for the region it was actually asked about.
+func NewEC2InstancesWithClients(byRegion func(region string) ec2API) *EC2Instances {
+	return &EC2Instances{in: byRegion}
 }
 
 // List fans out over the regions the scope asks for. EC2 has no cross-region
 // list, so this loop exists for every AWS resource type and lives once.
 func (e *EC2Instances) List(ctx context.Context, scope Scope) ([]EC2Instance, cloudinv.Incomplete, error) {
-	regions, err := e.regions(ctx, scope)
+	regions, err := e.regions(ctx)
 	if err != nil {
 		return nil, cloudinv.Incomplete{}, fmt.Errorf("listing enabled regions: %w", err)
 	}
 
+	offered := make(map[string]bool, len(regions))
 	var asked []string
 	for _, region := range regions {
+		offered[strings.ToLower(region)] = true
 		if scope.wants(region) {
 			asked = append(asked, region)
 		}
 	}
 
-	return cloudinv.FanOut(ctx, asked, faultOf, func(ctx context.Context, region string) ([]EC2Instance, error) {
-		return e.listIn(ctx, scope, region)
+	found, incomplete, err := cloudinv.FanOut(ctx, asked, faultOf, func(ctx context.Context, region string) ([]EC2Instance, error) {
+		return e.listIn(ctx, region)
 	})
+
+	// A region the caller named that the account does not offer is a question
+	// nobody answered, not an empty region.
+	if missing := cloudinv.Unoffered(scope.Regions, offered); len(missing) > 0 {
+		incomplete.Gaps = append(incomplete.Gaps, missing...)
+		incomplete.Asked += len(missing)
+	}
+	return found, incomplete, err
 }
 
 func (e *EC2Instances) Get(ctx context.Context, id cloudinv.ID) (EC2Instance, error) {
@@ -121,7 +134,7 @@ func (e *EC2Instances) Get(ctx context.Context, id cloudinv.ID) (EC2Instance, er
 		return EC2Instance{}, err
 	}
 
-	answer, err := e.in(Scope{}, region).DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+	answer, err := e.in(region).DescribeInstances(ctx, &ec2.DescribeInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
 	if err != nil {
@@ -141,18 +154,38 @@ func (e *EC2Instances) Delete(ctx context.Context, id cloudinv.ID) error {
 		return err
 	}
 
-	_, err = e.in(Scope{}, region).TerminateInstances(ctx, &ec2.TerminateInstancesInput{
+	client := e.in(region)
+	_, err = client.TerminateInstances(ctx, &ec2.TerminateInstancesInput{
 		InstanceIds: []string{instanceID},
 	})
-	if err != nil && faultOf(err) == cloudinv.FaultNotFound {
-		// An instance already gone is the state the caller wanted.
-		return nil
+	if err != nil {
+		// An instance already gone is the state the caller wanted. The client
+		// is built from the id's own region, so a not-found here is the
+		// account's answer rather than a lookup in the wrong region.
+		if faultOf(err) == cloudinv.FaultNotFound {
+			return nil
+		}
+		return err
 	}
-	return err
+
+	// The contract says a delete does not return until the resource is gone,
+	// and TerminateInstances returns while the instance is still shutting down.
+	waiter := ec2.NewInstanceTerminatedWaiter(client)
+	return waiter.Wait(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceID}}, terminateWait)
 }
 
+// terminateWait bounds the wait for an instance to reach terminated, so a stuck
+// instance fails the delete rather than holding the run forever.
+const terminateWait = 10 * time.Minute
+
 func (e *EC2Instances) Create(ctx context.Context, scope Scope, spec EC2InstanceSpec) (EC2Instance, error) {
-	request := spec.RunInstancesInput
+	if spec.RunInstancesInput == nil {
+		return EC2Instance{}, fmt.Errorf("the spec carries no RunInstancesInput")
+	}
+
+	// A copy, because the caller may reuse or share the spec and this fills in
+	// the counts.
+	request := *spec.RunInstancesInput
 	if request.MinCount == nil {
 		request.MinCount = awssdk.Int32(1)
 	}
@@ -160,7 +193,7 @@ func (e *EC2Instances) Create(ctx context.Context, scope Scope, spec EC2Instance
 		request.MaxCount = awssdk.Int32(1)
 	}
 
-	answer, err := e.in(scope, spec.Region).RunInstances(ctx, request)
+	answer, err := e.in(spec.Region).RunInstances(ctx, &request)
 	if err != nil {
 		return EC2Instance{}, err
 	}
@@ -170,8 +203,12 @@ func (e *EC2Instances) Create(ctx context.Context, scope Scope, spec EC2Instance
 	return instanceFrom(&answer.Instances[0], spec.Region), nil
 }
 
-func (e *EC2Instances) regions(ctx context.Context, scope Scope) ([]string, error) {
-	answer, err := e.in(scope, "us-east-1").DescribeRegions(ctx, &ec2.DescribeRegionsInput{})
+// regionsFrom is where DescribeRegions is asked. It answers for the whole
+// account, so any enabled region serves.
+const regionsFrom = "us-east-1"
+
+func (e *EC2Instances) regions(ctx context.Context) ([]string, error) {
+	answer, err := e.in(regionsFrom).DescribeRegions(ctx, &ec2.DescribeRegionsInput{})
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +222,8 @@ func (e *EC2Instances) regions(ctx context.Context, scope Scope) ([]string, erro
 	return found, nil
 }
 
-func (e *EC2Instances) listIn(ctx context.Context, scope Scope, region string) ([]EC2Instance, error) {
-	client := e.in(scope, region)
+func (e *EC2Instances) listIn(ctx context.Context, region string) ([]EC2Instance, error) {
+	client := e.in(region)
 
 	var found []EC2Instance
 	pager := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{})

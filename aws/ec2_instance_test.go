@@ -9,6 +9,7 @@ import (
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/smithy-go"
 	cloudinv "github.com/james00012/cloud-inventory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,6 +36,14 @@ func (f *fakeEC2) DescribeRegions(ctx context.Context, in *ec2.DescribeRegionsIn
 }
 
 func (f *fakeEC2) DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	// A lookup by id is the delete waiter asking whether the instance is gone.
+	if len(in.InstanceIds) > 0 {
+		return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{{
+			InstanceId: awssdk.String(in.InstanceIds[0]),
+			State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameTerminated},
+		}}}}}, nil
+	}
+
 	f.asked = append(f.asked, f.region)
 	if err, refused := f.refuse[f.region]; refused {
 		return nil, err
@@ -61,19 +70,20 @@ func (f *fakeEC2) TerminateInstances(ctx context.Context, in *ec2.TerminateInsta
 }
 
 func (f *fakeEC2) RunInstances(ctx context.Context, in *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
-	return &ec2.RunInstancesOutput{Instances: []ec2types.Instance{{
-		InstanceId: awssdk.String("i-new"),
-		Tags:       in.TagSpecifications[0].Tags,
-	}}}, nil
+	made := ec2types.Instance{InstanceId: awssdk.String("i-new")}
+	for _, spec := range in.TagSpecifications {
+		made.Tags = append(made.Tags, spec.Tags...)
+	}
+	return &ec2.RunInstancesOutput{Instances: []ec2types.Instance{made}}, nil
 }
 
-// regionally builds the type over a fake whose answers depend on the region the
-// library asked for, which is what the fan-out has to get right.
+// regionally builds the type over one fake per region, which is how a wrong
+// region now shows up as a different client rather than the same one.
 func regionally(fake *fakeEC2) *EC2Instances {
-	return &EC2Instances{in: func(scope Scope, region string) ec2API {
+	return NewEC2InstancesWithClients(func(region string) ec2API {
 		fake.region = region
 		return fake
-	}}
+	})
 }
 
 // A run narrowed to one region asks that region alone. AWS has no cross-region
@@ -165,4 +175,100 @@ func TestCreateSendsTheApisOwnRequest(t *testing.T) {
 	assert.Equal(t, "web", made.DisplayName())
 	assert.Equal(t, "test", made.Tags()["env"])
 	assert.Equal(t, "i-new", *made.InstanceId)
+}
+
+// A delete must reach the region in the id. Pointing every region at one
+// client used to hide this: the wrong region answers NotFound, the already-gone
+// branch fires, and a running instance is reported deleted.
+func TestDeleteAsksTheRegionNamedInTheId(t *testing.T) {
+	t.Parallel()
+
+	asked := map[string][]string{}
+	instances := NewEC2InstancesWithClients(func(region string) ec2API {
+		return &recordingEC2{region: region, terminated: asked}
+	})
+
+	require.NoError(t, instances.Delete(context.Background(), cloudinv.ID("eu-west-1/i-9")))
+	assert.Equal(t, map[string][]string{"eu-west-1": {"i-9"}}, asked)
+}
+
+// A region the caller named that the account does not offer is a gap, not an
+// empty region, or a misspelled region reads as a clean account.
+func TestListReportsARegionTheAccountDoesNotOffer(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEC2{regions: []string{"us-east-1", "us-west-2"}}
+
+	found, incomplete, err := regionally(fake).List(context.Background(), Scope{Regions: []string{"us-east-l"}})
+	require.NoError(t, err)
+
+	assert.Empty(t, found)
+	assert.True(t, incomplete.Any())
+	assert.Contains(t, incomplete.String(), "us-east-l")
+}
+
+// The codes EC2 actually returns have to land somewhere a consumer can act on.
+func TestFaultOfReadsTheCodesEc2Returns(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, cloudinv.FaultDenied, faultOf(&smithy.GenericAPIError{Code: "AuthFailure"}))
+	assert.Equal(t, cloudinv.FaultDenied, faultOf(&smithy.GenericAPIError{Code: "UnauthorizedOperation"}))
+	assert.Equal(t, cloudinv.FaultThrottle, faultOf(&smithy.GenericAPIError{Code: "RequestLimitExceeded"}))
+	assert.Equal(t, cloudinv.FaultNotFound, faultOf(&smithy.GenericAPIError{Code: "InvalidInstanceID.NotFound"}))
+	assert.Equal(t, cloudinv.FaultAPIDisabled, faultOf(&smithy.GenericAPIError{Code: "OptInRequired"}))
+
+	// Wrapped the way the SDK hands it up through an operation.
+	wrapped := &smithy.OperationError{ServiceID: "EC2", OperationName: "DescribeInstances",
+		Err: &smithy.GenericAPIError{Code: "AuthFailure"}}
+	assert.Equal(t, cloudinv.FaultDenied, faultOf(wrapped))
+}
+
+// The caller may reuse or share the spec, so Create fills its counts on a copy.
+func TestCreateLeavesTheCallersRequestAlone(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeEC2{}
+	request := &ec2.RunInstancesInput{ImageId: awssdk.String("ami-1")}
+
+	_, err := regionally(fake).Create(context.Background(), Scope{}, EC2InstanceSpec{
+		RunInstancesInput: request, Region: "us-east-1",
+	})
+	require.NoError(t, err)
+
+	assert.Nil(t, request.MinCount, "Create wrote into the caller's request")
+	assert.Nil(t, request.MaxCount)
+}
+
+func TestCreateRefusesASpecWithNoRequest(t *testing.T) {
+	t.Parallel()
+
+	_, err := regionally(&fakeEC2{}).Create(context.Background(), Scope{}, EC2InstanceSpec{Region: "us-east-1"})
+	require.Error(t, err)
+}
+
+// recordingEC2 answers a terminate for whichever region built it, and reports
+// the instance terminated so the waiter returns.
+type recordingEC2 struct {
+	region     string
+	terminated map[string][]string
+}
+
+func (r *recordingEC2) DescribeRegions(ctx context.Context, in *ec2.DescribeRegionsInput, _ ...func(*ec2.Options)) (*ec2.DescribeRegionsOutput, error) {
+	return &ec2.DescribeRegionsOutput{}, nil
+}
+
+func (r *recordingEC2) DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, _ ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	return &ec2.DescribeInstancesOutput{Reservations: []ec2types.Reservation{{Instances: []ec2types.Instance{{
+		InstanceId: awssdk.String(in.InstanceIds[0]),
+		State:      &ec2types.InstanceState{Name: ec2types.InstanceStateNameTerminated},
+	}}}}}, nil
+}
+
+func (r *recordingEC2) TerminateInstances(ctx context.Context, in *ec2.TerminateInstancesInput, _ ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+	r.terminated[r.region] = append(r.terminated[r.region], in.InstanceIds...)
+	return &ec2.TerminateInstancesOutput{}, nil
+}
+
+func (r *recordingEC2) RunInstances(ctx context.Context, in *ec2.RunInstancesInput, _ ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error) {
+	return &ec2.RunInstancesOutput{}, nil
 }

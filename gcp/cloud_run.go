@@ -2,13 +2,11 @@ package gcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	cloudinv "github.com/james00012/cloud-inventory"
-	"google.golang.org/api/googleapi"
 	runv1 "google.golang.org/api/run/v1"
 	runv2 "google.golang.org/api/run/v2"
 )
@@ -35,11 +33,22 @@ func (s CloudRunService) ResourceType() string    { return "cloud-run-service" }
 func (s CloudRunService) CreatedAt() time.Time    { return s.Created }
 
 // DisplayName is the last segment of the resource name, which is what the
-// console shows and what somebody writing a filter types.
-func (s CloudRunService) DisplayName() string { return shortName(s.Name) }
+// console shows and what somebody writing a filter types. It is empty on the
+// zero value, which Get and Create return beside an error.
+func (s CloudRunService) DisplayName() string {
+	if s.GoogleCloudRunV2Service == nil {
+		return ""
+	}
+	return shortName(s.Name)
+}
 
 // Tags are Cloud Run's labels, under the name every provider shares.
-func (s CloudRunService) Tags() map[string]string { return s.Labels }
+func (s CloudRunService) Tags() map[string]string {
+	if s.GoogleCloudRunV2Service == nil {
+		return nil
+	}
+	return s.Labels
+}
 
 var _ cloudinv.Resource = CloudRunService{}
 
@@ -93,16 +102,26 @@ func (c *CloudRunServices) List(ctx context.Context, scope Scope) ([]CloudRunSer
 		return nil, cloudinv.Incomplete{}, fmt.Errorf("listing Cloud Run locations: %w", err)
 	}
 
+	offered := make(map[string]bool, len(locations))
 	var asked []string
 	for _, location := range locations {
+		offered[strings.ToLower(location)] = true
 		if scope.wants(location) {
 			asked = append(asked, location)
 		}
 	}
 
-	return cloudinv.FanOut(ctx, asked, faultOf, func(ctx context.Context, location string) ([]CloudRunService, error) {
+	found, incomplete, err := cloudinv.FanOut(ctx, asked, faultOf, func(ctx context.Context, location string) ([]CloudRunService, error) {
 		return c.listIn(ctx, scope.ProjectID, location)
 	})
+
+	// A location the caller named that the project does not offer is a question
+	// nobody answered, not an empty location.
+	if missing := cloudinv.Unoffered(scope.Locations, offered); len(missing) > 0 {
+		incomplete.Gaps = append(incomplete.Gaps, missing...)
+		incomplete.Asked += len(missing)
+	}
+	return found, incomplete, err
 }
 
 func (c *CloudRunServices) Get(ctx context.Context, id cloudinv.ID) (CloudRunService, error) {
@@ -117,8 +136,7 @@ func (c *CloudRunServices) Delete(ctx context.Context, id cloudinv.ID) error {
 	operation, err := c.services.Projects.Locations.Services.Delete(string(id)).Context(ctx).Do()
 	if err != nil {
 		// A service already gone is the state the caller wanted.
-		var apiErr *googleapi.Error
-		if errors.As(err, &apiErr) && apiErr.Code == 404 {
+		if faultOf(err) == cloudinv.FaultNotFound {
 			return nil
 		}
 		return err
@@ -127,6 +145,10 @@ func (c *CloudRunServices) Delete(ctx context.Context, id cloudinv.ID) error {
 }
 
 func (c *CloudRunServices) Create(ctx context.Context, scope Scope, spec CloudRunServiceSpec) (CloudRunService, error) {
+	if spec.GoogleCloudRunV2Service == nil {
+		return CloudRunService{}, fmt.Errorf("the spec carries no service body")
+	}
+
 	parent := fmt.Sprintf("projects/%s/locations/%s", scope.ProjectID, spec.Location)
 
 	operation, err := c.services.Projects.Locations.Services.

@@ -3,6 +3,7 @@ package cloudinv
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,3 +95,32 @@ func TestIncompleteOnAnEmptyScopeIsNotATotalFailure(t *testing.T) {
 	assert.False(t, incomplete.Total())
 	assert.Zero(t, incomplete.Asked)
 }
+
+// A consumer wraps this in its own error, and the provider's message and the
+// chain errors.As walks have to survive that wrapping.
+func TestIncompleteCarriesACauseAConsumerCanWrap(t *testing.T) {
+	t.Parallel()
+
+	refused := &probeError{"the API is switched off"}
+	_, incomplete, err := FanOut(context.Background(), []string{"one"},
+		func(error) Fault { return FaultAPIDisabled },
+		func(ctx context.Context, part string) ([]string, error) { return nil, refused })
+	require.NoError(t, err)
+
+	wrapped := fmt.Errorf("could not list in any of the %d parts: %w", incomplete.Asked, incomplete.Cause())
+
+	var found *probeError
+	require.True(t, errors.As(wrapped, &found), "the cause did not survive wrapping")
+	assert.Contains(t, wrapped.Error(), "the API is switched off")
+}
+
+// An empty read has no cause, so a consumer does not wrap nil.
+func TestIncompleteWithNoGapsHasNoCause(t *testing.T) {
+	t.Parallel()
+
+	assert.NoError(t, Incomplete{}.Cause())
+}
+
+type probeError struct{ msg string }
+
+func (p *probeError) Error() string { return p.msg }
