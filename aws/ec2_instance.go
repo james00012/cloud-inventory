@@ -256,9 +256,16 @@ func (e *EC2Instances) listIn(ctx context.Context, region string) ([]EC2Instance
 func instanceFrom(instance *ec2types.Instance, region string) EC2Instance {
 	built := EC2Instance{Instance: instance, Region: region}
 	if instance.InstanceId != nil {
-		built.ID = cloudinv.ID(region + "/" + *instance.InstanceId)
+		built.ID = InstanceID(region, *instance.InstanceId)
 	}
 	return built
+}
+
+// InstanceID builds the canonical id for an instance from the two things a
+// caller knows, so nobody has to learn the format. Get and Delete take this,
+// and List and Create return it.
+func InstanceID(region, instanceID string) cloudinv.ID {
+	return cloudinv.ID(region + "/" + instanceID)
 }
 
 // splitID reads the region and the instance out of an id. An EC2 instance id is

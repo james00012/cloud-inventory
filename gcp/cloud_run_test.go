@@ -348,3 +348,16 @@ func TestWaitGivesUpOnAnOperationThatNeverFinishes(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 	assert.Contains(t, err.Error(), "operations/stuck")
 }
+
+func TestServiceIDMatchesTheIDAListingReturns(t *testing.T) {
+	// The API answers with the resource path in Name, and a listing uses it as
+	// the id. The constructor has to produce the same string, or a caller who
+	// builds an id cannot Get what a listing found.
+	listed := serviceFrom(&runv2.GoogleCloudRunV2Service{
+		Name: "projects/my-project/locations/us-central1/services/api",
+	})
+
+	if want := ServiceID("my-project", "us-central1", "api"); listed.ResourceID() != want {
+		t.Fatalf("a listing returned %q but the constructor builds %q", listed.ResourceID(), want)
+	}
+}

@@ -153,10 +153,9 @@ func (c *CloudRunServices) Create(ctx context.Context, scope Scope, spec CloudRu
 		return CloudRunService{}, fmt.Errorf("the spec carries no service body")
 	}
 
-	parent := fmt.Sprintf("projects/%s/locations/%s", scope.ProjectID, spec.Location)
-
 	operation, err := c.services.Projects.Locations.Services.
-		Create(parent, spec.GoogleCloudRunV2Service).ServiceId(spec.ServiceID).Context(ctx).Do()
+		Create(locationPath(scope.ProjectID, spec.Location), spec.GoogleCloudRunV2Service).
+		ServiceId(spec.ServiceID).Context(ctx).Do()
 	if err != nil {
 		return CloudRunService{}, err
 	}
@@ -166,7 +165,20 @@ func (c *CloudRunServices) Create(ctx context.Context, scope Scope, spec CloudRu
 
 	// The create answers with an operation, so the library reads the service
 	// back and returns the same type List and Get return.
-	return c.Get(ctx, cloudinv.ID(parent+"/services/"+spec.ServiceID))
+	return c.Get(ctx, ServiceID(scope.ProjectID, spec.Location, spec.ServiceID))
+}
+
+// ServiceID builds the canonical id for a service from the three things a
+// caller knows, so nobody has to learn that Cloud Run's id is a resource path.
+// Get and Delete take this, and List and Create return it.
+func ServiceID(projectID, location, serviceID string) cloudinv.ID {
+	return cloudinv.ID(locationPath(projectID, location) + "/services/" + serviceID)
+}
+
+// locationPath is the parent a create posts to, and the prefix of every id
+// under it.
+func locationPath(projectID, location string) string {
+	return fmt.Sprintf("projects/%s/locations/%s", projectID, location)
 }
 
 func (c *CloudRunServices) listLocations(ctx context.Context, projectID string) ([]string, error) {

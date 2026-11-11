@@ -326,3 +326,24 @@ func TestListNeverAsksAnExcludedRegion(t *testing.T) {
 	assert.Len(t, found, 1)
 	assert.Equal(t, 1, incomplete.Asked)
 }
+
+func TestInstanceIDRoundTripsWithWhatGetExpects(t *testing.T) {
+	id := InstanceID("eu-west-1", "i-0abc123")
+
+	region, instanceID, err := splitID(id)
+	if err != nil {
+		t.Fatalf("the id this package builds is not one it can read: %v", err)
+	}
+	if region != "eu-west-1" || instanceID != "i-0abc123" {
+		t.Fatalf("round trip gave %q and %q", region, instanceID)
+	}
+}
+
+func TestInstanceIDMatchesTheIDAListingReturns(t *testing.T) {
+	instanceID := "i-0abc123"
+	listed := instanceFrom(&ec2types.Instance{InstanceId: &instanceID}, "eu-west-1")
+
+	if want := InstanceID("eu-west-1", instanceID); listed.ResourceID() != want {
+		t.Fatalf("a listing returned %q but the constructor builds %q", listed.ResourceID(), want)
+	}
+}
