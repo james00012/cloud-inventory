@@ -66,8 +66,10 @@ type EC2InstanceSpec struct {
 	Region string
 }
 
-// ec2API is the part of the EC2 API this type uses.
-type ec2API interface {
+// EC2API is the part of the EC2 API this type uses. It is exported so a
+// consumer can drive this type from a test without AWS credentials, which is
+// what a test library wrapping this needs.
+type EC2API interface {
 	DescribeInstances(ctx context.Context, in *ec2.DescribeInstancesInput, opts ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	DescribeRegions(ctx context.Context, in *ec2.DescribeRegionsInput, opts ...func(*ec2.Options)) (*ec2.DescribeRegionsOutput, error)
 	TerminateInstances(ctx context.Context, in *ec2.TerminateInstancesInput, opts ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error)
@@ -78,13 +80,13 @@ type ec2API interface {
 type EC2Instances struct {
 	// in makes the client for one region. Keying it by region alone is what
 	// stops a delete reaching the wrong region with the right instance id.
-	in func(region string) ec2API
+	in func(region string) EC2API
 }
 
 // NewEC2Instances binds the type to one account's credentials. Get and Delete
 // take an id rather than a scope, so the credentials cannot arrive per call.
 func NewEC2Instances(cfg awssdk.Config) *EC2Instances {
-	return &EC2Instances{in: func(region string) ec2API {
+	return &EC2Instances{in: func(region string) EC2API {
 		regional := cfg.Copy()
 		regional.Region = region
 		return ec2.NewFromConfig(regional)
@@ -94,7 +96,7 @@ func NewEC2Instances(cfg awssdk.Config) *EC2Instances {
 // NewEC2InstancesWithClients takes a client per region, which is how a test
 // drives this without AWS. It is a function of the region rather than one
 // client, so a fake answers for the region it was actually asked about.
-func NewEC2InstancesWithClients(byRegion func(region string) ec2API) *EC2Instances {
+func NewEC2InstancesWithClients(byRegion func(region string) EC2API) *EC2Instances {
 	return &EC2Instances{in: byRegion}
 }
 

@@ -81,7 +81,7 @@ func (f *fakeEC2) RunInstances(ctx context.Context, in *ec2.RunInstancesInput, _
 // asked for. A test that needs a wrong region to look different builds its own
 // client per region, as TestDeleteAsksTheRegionNamedInTheId does.
 func regionally(fake *fakeEC2) *EC2Instances {
-	return NewEC2InstancesWithClients(func(region string) ec2API {
+	return NewEC2InstancesWithClients(func(region string) EC2API {
 		fake.region = region
 		return fake
 	})
@@ -169,7 +169,7 @@ func TestDeleteAsksTheRegionNamedInTheId(t *testing.T) {
 	t.Parallel()
 
 	asked := map[string][]string{}
-	instances := NewEC2InstancesWithClients(func(region string) ec2API {
+	instances := NewEC2InstancesWithClients(func(region string) EC2API {
 		return &recordingEC2{region: region, terminated: asked}
 	})
 
@@ -271,7 +271,7 @@ func (r *recordingEC2) RunInstances(ctx context.Context, in *ec2.RunInstancesInp
 func TestDeleteTreatsAReapedInstanceAsGone(t *testing.T) {
 	t.Parallel()
 
-	instances := NewEC2InstancesWithClients(func(region string) ec2API {
+	instances := NewEC2InstancesWithClients(func(region string) EC2API {
 		return &reapedEC2{}
 	})
 
@@ -283,7 +283,7 @@ func TestDeleteTreatsAReapedInstanceAsGone(t *testing.T) {
 func TestDeleteNamesWhatItCouldNotConfirm(t *testing.T) {
 	t.Parallel()
 
-	instances := NewEC2InstancesWithClients(func(region string) ec2API {
+	instances := NewEC2InstancesWithClients(func(region string) EC2API {
 		return &refusingEC2{}
 	})
 
