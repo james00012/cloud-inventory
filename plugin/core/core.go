@@ -292,6 +292,29 @@ func (s *Service[T, CreateSpec, Scope]) Get(ctx context.Context, id cloudinv.ID,
 	return carry(got, withFullData)
 }
 
+// alreadyMade answers with the resource an earlier create made, so a retry
+// does not make a second one. found is false where the provider cannot say
+// which resource a create would make, or where there is no such resource yet.
+func (s *Service[T, CreateSpec, Scope]) alreadyMade(ctx context.Context, scope Scope, wanted CreateSpec, withFullData bool) (Resource, bool, error) {
+	if s.spec.Identify == nil || s.spec.Getter == nil {
+		return Resource{}, false, nil
+	}
+	id, ok := s.spec.Identify(scope, wanted)
+	if !ok {
+		return Resource{}, false, nil
+	}
+	existing, err := s.spec.Getter.Get(ctx, id)
+	if err != nil {
+		return Resource{}, false, nil
+	}
+	carried, err := carry(existing, withFullData)
+	if err != nil {
+		return Resource{}, true, err
+	}
+	s.record("create", id, "already existed", nil)
+	return carried, true, nil
+}
+
 func (s *Service[T, CreateSpec, Scope]) Create(ctx context.Context, scopeJSON, specJSON []byte, withFullData bool) (Resource, error) {
 	if err := s.allows(Create); err != nil {
 		return Resource{}, err
@@ -314,18 +337,8 @@ func (s *Service[T, CreateSpec, Scope]) Create(ctx context.Context, scopeJSON, s
 		}
 	}
 
-	// A retried create answers with the resource the first one made, rather
-	// than making a second, where the provider can say what it would make.
-	if s.spec.Identify != nil && s.spec.Getter != nil {
-		if id, ok := s.spec.Identify(scope, wanted); ok {
-			if existing, err := s.spec.Getter.Get(ctx, id); err == nil {
-				carried, err := carry(existing, withFullData)
-				if err == nil {
-					s.record("create", id, "already existed", nil)
-				}
-				return carried, err
-			}
-		}
+	if existing, found, err := s.alreadyMade(ctx, scope, wanted, withFullData); found {
+		return existing, err
 	}
 
 	made, err := s.spec.Creator.Create(ctx, scope, wanted)

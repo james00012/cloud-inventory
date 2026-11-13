@@ -26,8 +26,8 @@ var build = sync.OnceValues(func() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	binary := filepath.Join(dir, "provider-gcp-json")
-	out, err := exec.Command("go", "build", "-o", binary, "../cmd/provider-gcp-json").CombinedOutput()
+	binary := filepath.Join(dir, "provider-gcp")
+	out, err := exec.Command("go", "build", "-o", binary, "../cmd/provider-gcp").CombinedOutput()
 	if err != nil {
 		return "", &buildFailed{string(out), err}
 	}

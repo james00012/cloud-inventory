@@ -1,5 +1,6 @@
-// Command provider-gcp serves Google Cloud resource types over the inventory
-// contract. A host starts it as a subprocess and never links a Google SDK.
+// Command provider-gcp serves Google Cloud resource types over JSON-RPC on
+// its standard input and output. A host starts it as a subprocess and links no
+// Google SDK; a shell script can drive it with jq.
 package main
 
 import (
@@ -8,15 +9,15 @@ import (
 	"os"
 
 	cloudinv "github.com/james00012/cloud-inventory"
+
 	"github.com/james00012/cloud-inventory/gcp"
-	"github.com/james00012/cloud-inventory/plugin/provider"
+	"github.com/james00012/cloud-inventory/plugin/core"
+	"github.com/james00012/cloud-inventory/plugin/jsonrpc"
 	"google.golang.org/api/option"
 	runv1 "google.golang.org/api/run/v1"
 	runv2 "google.golang.org/api/run/v2"
 )
 
-// endpointVar points the provider at a stand-in for Cloud Run, which is how it
-// is driven in a test. Unset, it reaches Google with ambient credentials.
 const (
 	endpointVar = "CLOUD_INVENTORY_GCP_ENDPOINT"
 	projectVar  = "CLOUD_INVENTORY_GCP_PROJECT"
@@ -32,25 +33,40 @@ func main() {
 
 	locations, err := runv1.NewService(ctx, options...)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cloud run location client:", err)
-		os.Exit(1)
+		fail("cloud run location client", err)
 	}
 	services, err := runv2.NewService(ctx, options...)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cloud run client:", err)
-		os.Exit(1)
+		fail("cloud run client", err)
 	}
 
 	project := os.Getenv(projectVar)
 	cloudRun := gcp.NewCloudRunServicesWithClients(locations, services)
 
-	provider.Serve(provider.Server(provider.Resource[gcp.CloudRunService, gcp.CloudRunServiceSpec, gcp.Scope]{
+	service := core.New(core.Spec[gcp.CloudRunService, gcp.CloudRunServiceSpec, gcp.Scope]{
 		Lister:  cloudRun,
 		Getter:  cloudRun,
 		Deleter: cloudRun,
 		Creator: cloudRun,
 
-		// On Google the account a session is bound to is the project.
+		// What this provider offers, which a tool reads to plan a run.
+		Declares: []core.TypeInfo{{
+			Type:        "cloud-run-service",
+			Operations:  []string{"list", "get", "create", "delete"},
+			ScopeFields: []string{"ProjectID", "Locations"},
+		}},
+
+		// What a create would make, which is what lets a retried create answer
+		// with the first one's resource.
+		Identify: func(scope gcp.Scope, spec gcp.CloudRunServiceSpec) (cloudinv.ID, bool) {
+			if scope.ProjectID == "" || spec.Location == "" || spec.ServiceID == "" {
+				return "", false
+			}
+			return gcp.ServiceID(scope.ProjectID, spec.Location, spec.ServiceID), true
+		},
+
+		RunTagKey: "cloud-inventory-run",
+
 		Account: func(context.Context) (string, error) { return project, nil },
 
 		Scopes: func(ctx context.Context) ([]string, error) {
@@ -64,7 +80,16 @@ func main() {
 			}
 			return found, nil
 		},
+	})
 
-		Fault: func(error) cloudinv.Fault { return cloudinv.FaultUnknown },
-	}))
+	// Only protocol messages reach standard output, so a script can pipe it
+	// straight into jq.
+	if err := jsonrpc.NewServer(service).Serve(ctx, os.Stdin, os.Stdout); err != nil {
+		fail("serving", err)
+	}
+}
+
+func fail(what string, err error) {
+	fmt.Fprintln(os.Stderr, what+":", err)
+	os.Exit(1)
 }
