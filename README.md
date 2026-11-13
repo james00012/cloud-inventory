@@ -5,9 +5,10 @@ how cloud-nuke and terratest adopt it*. It is **not** a Gruntwork repository and
 **not** meant to be depended on. The module path will change if the design is
 adopted.
 
-It exists to settle one question with code rather than opinion: **can a plugin
-boundary keep the provider's own SDK fields?** This prototype says no, and shows
-what you get when the library stays in-process instead.
+It exists to settle one question with code rather than opinion: **what does a
+plugin boundary cost, and what does it buy?** Both designs are built here, the
+library in process and the same resource types served to a host over gRPC, so
+the answer is measured rather than argued.
 
 ## What it holds
 
@@ -52,9 +53,11 @@ type Resource interface {
 2. **The caller passes the regions to query.** Neither the Cloud Run v2 API nor
    EC2 lists across regions, so both call the shared `FanOut`. Narrowing is an
    input, not a filter applied to the answers.
-3. **The provider's struct is embedded, not modelled.** This is the property a
-   plugin boundary cannot keep: across a process boundary the struct has to be
-   re-modelled as JSON, which is the modelling treadmill the embedding avoids.
+3. **The provider's struct is embedded, not modelled.** In process a consumer
+   receives the SDK's own value. Across a plugin boundary it receives bytes, and
+   needs a type that models the cloud to read them, which is either the SDK
+   itself or a type generated to match it. See [plugin/README.md](plugin/README.md)
+   for what that costs, measured.
 
 ## Why the contract is methods, not fields
 

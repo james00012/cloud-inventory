@@ -1,0 +1,125 @@
+// The contract every provider offers, whatever the cloud. A host links only the
+// generated code for this file, never a cloud SDK.
+syntax = "proto3";
+
+package inventory.v1;
+
+option go_package = "github.com/james00012/cloud-inventory/plugin/proto;inventorypb";
+
+import "google/protobuf/timestamp.proto";
+
+// Fault is the fixed set of kinds every cloud error is sorted into, so a host
+// acts on the kind rather than on a cloud's error text.
+enum Fault {
+  FAULT_UNKNOWN = 0;
+  FAULT_THROTTLE = 1;
+  FAULT_API_DISABLED = 2;
+  FAULT_DENIED = 3;
+  FAULT_NOT_FOUND = 4;
+}
+
+// Feature is what a session may do. Read is the default; create and delete each
+// have to be asked for.
+enum Feature {
+  FEATURE_UNSPECIFIED = 0;
+  FEATURE_READ = 1;
+  FEATURE_CREATE = 2;
+  FEATURE_DELETE = 3;
+}
+
+// Resource carries the common fields any host can filter on, and on request the
+// provider's own representation of the resource.
+message Resource {
+  string id = 1;
+  string type = 2;
+  string display_name = 3;
+  google.protobuf.Timestamp created_at = 4;
+  map<string, string> tags = 5;
+
+  // full_data is the cloud's own body for this resource, as the provider's SDK
+  // returned it. Empty unless the request asked for it.
+  bytes full_data = 6;
+}
+
+// Gap is a part of a scope the provider could not read. A host reads it as
+// unknown, never as empty.
+message Gap {
+  string scope = 1;
+  Fault fault = 2;
+  string message = 3;
+}
+
+message ConfigureRequest {
+  repeated Feature features = 1;
+
+  // expect_account is the account the host believes it is pointed at. The
+  // provider refuses the session, and every write, on a mismatch.
+  string expect_account = 2;
+
+  // scope_json is the provider's own scope type, which only it parses.
+  string scope_json = 3;
+}
+
+message ConfigureResponse {
+  repeated Feature granted = 1;
+  string account = 2;
+}
+
+message DiscoverScopesRequest {}
+
+message DiscoverScopesResponse {
+  repeated string scopes = 1;
+}
+
+message ListRequest {
+  string scope_json = 1;
+  bool with_full_data = 2;
+}
+
+message ListResponse {
+  repeated Resource resources = 1;
+  repeated Gap gaps = 2;
+
+  // asked is how many parts of the scope were attempted, so a host can tell a
+  // total failure from a partial one.
+  int32 asked = 3;
+}
+
+message GetRequest {
+  string id = 1;
+  bool with_full_data = 2;
+}
+
+message GetResponse {
+  Resource resource = 1;
+}
+
+message CreateRequest {
+  string scope_json = 1;
+
+  // spec_json is the provider's own spec, which carries the cloud API's own
+  // request body.
+  string spec_json = 2;
+  bool with_full_data = 3;
+}
+
+message CreateResponse {
+  Resource resource = 1;
+}
+
+message DeleteRequest {
+  string id = 1;
+}
+
+message DeleteResponse {}
+
+// Inventory reads, creates and deletes. There is no general update: moving a
+// resource toward a desired state is OpenTofu's job.
+service Inventory {
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+  rpc DiscoverScopes(DiscoverScopesRequest) returns (DiscoverScopesResponse);
+  rpc List(ListRequest) returns (ListResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Create(CreateRequest) returns (CreateResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}

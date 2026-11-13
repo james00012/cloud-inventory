@@ -1,0 +1,8 @@
+go 1.26.0
+
+// Development workspace, so the plugin module sees the contract module's
+// uncommitted code without a replace directive. Not used at release.
+use (
+	.
+	./plugin
+)
