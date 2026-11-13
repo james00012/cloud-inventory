@@ -1,0 +1,21 @@
+{
+  "baseUrl": "https://run.googleapis.com/",
+  "descriptors": {
+    "projects.locations.services": {
+      "type": "projects-locations-services",
+      "listPath": "v2/{+parent}/services",
+      "getPath": "v2/{+name}",
+      "deletePath": "v2/{+name}",
+      "createPath": "v2/{+parent}/services",
+      "arrayField": "services",
+      "identityField": "name",
+      "createdField": "createTime",
+      "labelsField": "labels",
+      "scopeParams": [
+        "parent"
+      ],
+      "createQuery": "serviceId",
+      "paged": true
+    }
+  }
+}

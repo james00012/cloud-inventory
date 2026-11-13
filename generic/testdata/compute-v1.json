@@ -1,0 +1,21 @@
+{
+  "baseUrl": "https://compute.googleapis.com/compute/v1/",
+  "descriptors": {
+    "instances": {
+      "type": "instances",
+      "listPath": "projects/{project}/zones/{zone}/instances",
+      "getPath": "projects/{project}/zones/{zone}/instances/{instance}",
+      "deletePath": "projects/{project}/zones/{zone}/instances/{instance}",
+      "createPath": "projects/{project}/zones/{zone}/instances",
+      "arrayField": "items",
+      "identityField": "selfLink",
+      "createdField": "creationTimestamp",
+      "labelsField": "labels",
+      "scopeParams": [
+        "project",
+        "zone"
+      ],
+      "paged": true
+    }
+  }
+}
