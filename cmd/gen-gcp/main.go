@@ -83,15 +83,34 @@ func main() {
 		wanted[name] = true
 	}
 
+	// promoted lists the types a human reviewed and allowed to create or
+	// delete. A scheduled refresh never adds to it.
+	promoted := map[string][]string{}
+	if path := os.Getenv("PROMOTIONS"); path != "" {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if err := json.Unmarshal(body, &promoted); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
 	found := map[string]generic.Descriptor{}
 	walk(&doc, doc.Resources, nil, found)
 
 	out := map[string]any{"baseUrl": doc.BaseURL, "descriptors": map[string]generic.Descriptor{}}
 	keep := out["descriptors"].(map[string]generic.Descriptor)
 	for name, d := range found {
-		if len(wanted) == 0 || wanted[name] {
-			keep[name] = d
+		if len(wanted) != 0 && !wanted[name] {
+			continue
 		}
+		if extra, ok := promoted[name]; ok {
+			d.Operations = append(d.Operations, extra...)
+		}
+		keep[name] = d
 	}
 
 	encoded, err := json.MarshalIndent(out, "", "  ")
@@ -165,6 +184,10 @@ func describe(doc *discovery, methods map[string]method, path string) (generic.D
 		LabelsField:   firstPresent(item, labelFields),
 		ScopeParams:   requiredPathParams(list),
 		Paged:         hasParam(list, "pageToken"),
+
+		// A new type is list-only. Promotion is a reviewed change, recorded in
+		// the promotions file rather than decided here.
+		Operations: []string{"list", "get"},
 	}
 
 	// A create is insert on the older APIs and create on the newer ones, and

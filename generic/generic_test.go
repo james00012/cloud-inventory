@@ -219,3 +219,37 @@ func TestAZoneThatCouldNotBeReadIsAGap(t *testing.T) {
 		t.Fatalf("gaps %+v", incomplete.Gaps)
 	}
 }
+
+// TestANewTypeArrivesListOnly pins the promotion rule: generation can add a
+// type, but only a reviewed change can let it create or delete. A scheduled
+// refresh that picked up a new type must not be able to nuke with it.
+func TestANewTypeArrivesListOnly(t *testing.T) {
+	d := load(t, "run-v2-jobs.json", "projects.locations.jobs")
+
+	if len(d.Operations) != 2 || d.Operations[0] != "list" || d.Operations[1] != "get" {
+		t.Fatalf("a freshly generated type offers %v", d.Operations)
+	}
+
+	client := &Client{BaseURL: "http://unused", Descriptor: d}
+	ctx := context.Background()
+
+	if err := client.Delete(ctx, "projects/demo/locations/us-central1/jobs/nightly"); err == nil {
+		t.Fatal("a list-only type deleted something")
+	} else if !strings.Contains(err.Error(), "reviewed change") {
+		t.Fatalf("refused for the wrong reason: %v", err)
+	}
+
+	if _, err := client.Create(ctx, Scope{"parent": {"projects/demo/locations/us-central1"}}, Spec{Name: "nightly"}); err == nil {
+		t.Fatal("a list-only type created something")
+	}
+}
+
+// TestAPromotedTypeCanDelete is the other half: once reviewed, the same
+// generated descriptor carries the operation.
+func TestAPromotedTypeCanDelete(t *testing.T) {
+	d := load(t, "run-v2.json", "projects.locations.services")
+
+	if !d.offers("delete") {
+		t.Fatalf("a promoted type offers %v", d.Operations)
+	}
+}

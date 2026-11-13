@@ -10,6 +10,23 @@ The earlier gRPC version is kept beside it, since the RFC now records gRPC as
 the alternative that was prototyped and not chosen. Keeping both is what made
 the comparison below measurable.
 
+## What the contract now carries
+
+- **The provider declares its types**, what each offers, the fields a scope
+  needs, and which must be deleted before which. The tool plans the order, in
+  `../plugin/plan`, and refuses a declaration that cannot be ordered.
+- **A resource says what it sits inside**, and whether a delete cannot work and
+  why. A provider never guesses this: it reports only what the cloud's own
+  record states, because hiding a resource from a cleanup is worse than trying
+  and failing.
+- **Everything a run creates carries the run's tag**, and a retried create
+  answers with the resource the first one made rather than a second.
+- **Every create and delete is audited** with the caller, the account, the run
+  and the outcome, and a host reads the log back over the protocol.
+- **The protocol has a JSON schema**, and a test drives a whole session and
+  checks every line in both directions against it, so the schema is the
+  contract rather than a description of one.
+
 ## What runs
 
 The tests drive a real subprocess, not a server in the same process.

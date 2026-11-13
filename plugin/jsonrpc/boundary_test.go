@@ -44,6 +44,7 @@ func (b *buildFailed) Error() string { return b.err.Error() + ": " + b.out }
 // cloudRun stands Cloud Run up and records what it was asked.
 type cloudRun struct {
 	mu      sync.Mutex
+	posted  []map[string]any
 	seen    []string
 	count   int
 	refuse  map[string]bool
@@ -68,6 +69,11 @@ func (c *cloudRun) handler() http.HandlerFunc {
 			c.set(false)
 			_ = json.NewEncoder(w).Encode(done)
 		case r.Method == http.MethodPost && !strings.HasSuffix(r.URL.Path, ":wait"):
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			c.mu.Lock()
+			c.posted = append(c.posted, body)
+			c.mu.Unlock()
 			c.set(true)
 			_ = json.NewEncoder(w).Encode(done)
 		case r.Method == http.MethodPost:
@@ -81,6 +87,12 @@ func (c *cloudRun) handler() http.HandlerFunc {
 				answer.Services = append(answer.Services, c.body(i))
 			}
 			_ = json.NewEncoder(w).Encode(answer)
+		case !c.has(r.URL.Path):
+			// Strict about the path and about existence, so a provider that
+			// builds the wrong path, or reads one nothing created, is caught
+			// here rather than answered anyway.
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "service not found"}})
 		default:
 			_ = json.NewEncoder(w).Encode(c.body(0))
 		}
@@ -100,6 +112,14 @@ func (c *cloudRun) body(i int) *runv2.GoogleCloudRunV2Service {
 }
 
 func (c *cloudRun) set(v bool) { c.mu.Lock(); c.present = v; c.mu.Unlock() }
+
+// has is true only where the service exists and the path names it, so a
+// provider that builds the wrong path is caught here rather than answered.
+func (c *cloudRun) has(path string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.present && strings.HasSuffix(path, "/projects/demo/locations/us-central1/services/api")
+}
 func (c *cloudRun) many() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -121,6 +141,12 @@ func (c *cloudRun) refusedFor(path string) bool {
 	}
 	return false
 }
+func (c *cloudRun) creates() []map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]map[string]any(nil), c.posted...)
+}
+
 func (c *cloudRun) asked() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -138,6 +164,11 @@ func serve(t *testing.T, fake *cloudRun) string {
 
 func start(t *testing.T, fake *cloudRun, features ...core.Feature) *jsonrpc.Session {
 	t.Helper()
+	return startAs(t, fake, "", "", features...)
+}
+
+func startAs(t *testing.T, fake *cloudRun, caller, run string, features ...core.Feature) *jsonrpc.Session {
+	t.Helper()
 	binary, err := build()
 	if err != nil {
 		t.Fatalf("building the provider: %v", err)
@@ -146,6 +177,7 @@ func start(t *testing.T, fake *cloudRun, features ...core.Feature) *jsonrpc.Sess
 
 	session, err := jsonrpc.Start(context.Background(), jsonrpc.Options{
 		Binary: binary, Features: features, ExpectAccount: "demo",
+		Caller: caller, Run: run,
 		Scope: gcp.Scope{ProjectID: "demo"}, Stderr: os.Stderr,
 	})
 	if err != nil {
@@ -314,13 +346,12 @@ func asProtocol(err error, into **jsonrpc.Error) bool {
 	return false
 }
 
-// TestAnEmptySpecBodyDoesNotSurviveTheBoundary records a cost of carrying the
-// cloud's own request body inside the spec. The body is an embedded pointer, so
-// a spec whose body is set but empty marshals to nothing and arrives as nil.
-// The provider refuses it rather than creating something the caller did not
-// describe, which is the safe reading, but a caller cannot tell "empty" from
-// "absent" across the wire.
-func TestAnEmptySpecBodyDoesNotSurviveTheBoundary(t *testing.T) {
+// TestAnEmptySpecBodyStillCrossesTheBoundary records what the spec's own
+// marshalling bought. The body is an embedded Google struct with its own
+// MarshalJSON, which Go promotes, so a spec used to lose both its own fields
+// and an empty body on the way out. Now an empty body arrives as an empty
+// body, and whether that is a legal create is the cloud's business.
+func TestAnEmptySpecBodyStillCrossesTheBoundary(t *testing.T) {
 	fake := &cloudRun{refuse: map[string]bool{}}
 	session := start(t, fake, core.Create)
 
@@ -328,15 +359,19 @@ func TestAnEmptySpecBodyDoesNotSurviveTheBoundary(t *testing.T) {
 		ServiceID: "api", Location: "us-central1",
 		GoogleCloudRunV2Service: &runv2.GoogleCloudRunV2Service{},
 	}, false)
-	if err == nil {
-		t.Fatal("an empty body was accepted")
+	if err != nil {
+		t.Fatalf("creating: %v", err)
 	}
-	if !strings.Contains(err.Error(), "carries no service body") {
-		t.Fatalf("refused for the wrong reason: %v", err)
+
+	creates := fake.creates()
+	if len(creates) != 1 {
+		t.Fatalf("the provider posted %d creates", len(creates))
 	}
+	// The path carries the spec's own fields, which is what used to vanish.
 	for _, request := range fake.asked() {
-		if strings.HasPrefix(request, "POST") {
-			t.Fatal("the refusal still reached the cloud")
+		if strings.HasPrefix(request, "POST") && strings.Contains(request, "locations/us-central1/services") {
+			return
 		}
 	}
+	t.Fatalf("the create did not reach the right path: %v", fake.asked())
 }

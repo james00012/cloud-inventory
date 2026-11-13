@@ -43,6 +43,21 @@ type Descriptor struct {
 	CreateQuery string `json:"createQuery,omitempty"`
 
 	Paged bool `json:"paged"`
+
+	// Operations this type offers. A generated type arrives with list and get
+	// only; create and delete are added by a reviewed change, so a scheduled
+	// refresh can never make a new type deletable on its own.
+	Operations []string `json:"operations"`
+}
+
+// offers reports whether a reviewed change promoted this type to an operation.
+func (d Descriptor) offers(operation string) bool {
+	for _, allowed := range d.Operations {
+		if allowed == operation {
+			return true
+		}
+	}
+	return false
 }
 
 // Resource is one resource read generically: the contract's five methods over
@@ -185,6 +200,10 @@ func address(d Descriptor, id cloudinv.ID) (string, error) {
 // Delete removes one resource and waits for the operation it answers with,
 // since the contract says a delete does not return until the resource is gone.
 func (c *Client) Delete(ctx context.Context, id cloudinv.ID) error {
+	if !c.Descriptor.offers("delete") {
+		return fmt.Errorf("%s is list-only: adding delete to it is a reviewed change", c.Descriptor.Type)
+	}
+
 	where, err := address(c.Descriptor, id)
 	if err != nil {
 		return err
@@ -203,8 +222,8 @@ func (c *Client) Delete(ctx context.Context, id cloudinv.ID) error {
 
 // Create makes one resource from the API's own request body.
 func (c *Client) Create(ctx context.Context, scope Scope, spec Spec) (Resource, error) {
-	if c.Descriptor.CreatePath == "" {
-		return Resource{}, fmt.Errorf("%s cannot be created", c.Descriptor.Type)
+	if c.Descriptor.CreatePath == "" || !c.Descriptor.offers("create") {
+		return Resource{}, fmt.Errorf("%s is list-only: adding create to it is a reviewed change", c.Descriptor.Type)
 	}
 
 	values, err := single(c.Descriptor.ScopeParams, scope)

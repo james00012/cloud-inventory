@@ -15,7 +15,13 @@
         "parent"
       ],
       "createQuery": "serviceId",
-      "paged": true
+      "paged": true,
+      "operations": [
+        "list",
+        "get",
+        "create",
+        "delete"
+      ]
     }
   }
 }

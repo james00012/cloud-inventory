@@ -2,6 +2,7 @@ package gcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -43,6 +44,17 @@ func (s CloudRunService) DisplayName() string {
 }
 
 // Tags are Cloud Run's labels, under the name every provider shares.
+// Parents is the location the service sits in, which is the only grouping
+// Cloud Run's own resource path carries.
+func (s CloudRunService) Parents() []cloudinv.ID {
+	path := string(s.ID)
+	at := strings.Index(path, "/services/")
+	if at < 0 {
+		return nil
+	}
+	return []cloudinv.ID{cloudinv.ID(path[:at])}
+}
+
 func (s CloudRunService) Tags() map[string]string {
 	if s.GoogleCloudRunV2Service == nil {
 		return nil
@@ -146,6 +158,68 @@ func (c *CloudRunServices) Delete(ctx context.Context, id cloudinv.ID) error {
 		return err
 	}
 	return c.wait(ctx, operation)
+}
+
+// MarshalJSON and UnmarshalJSON exist because the embedded type is a Google
+// generated struct with its own MarshalJSON, which Go promotes to this one.
+// Without these, marshalling a spec calls the body's marshaller and ServiceID
+// and Location never reach the wire at all.
+func (s CloudRunServiceSpec) MarshalJSON() ([]byte, error) {
+	body := []byte("{}")
+	if s.GoogleCloudRunV2Service != nil {
+		encoded, err := json.Marshal(s.GoogleCloudRunV2Service)
+		if err != nil {
+			return nil, err
+		}
+		body = encoded
+	}
+
+	var merged map[string]json.RawMessage
+	if err := json.Unmarshal(body, &merged); err != nil {
+		return nil, err
+	}
+	if merged == nil {
+		merged = map[string]json.RawMessage{}
+	}
+	for key, value := range map[string]string{"ServiceID": s.ServiceID, "Location": s.Location} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		merged[key] = encoded
+	}
+	return json.Marshal(merged)
+}
+
+func (s *CloudRunServiceSpec) UnmarshalJSON(body []byte) error {
+	var own struct {
+		ServiceID string
+		Location  string
+	}
+	if err := json.Unmarshal(body, &own); err != nil {
+		return err
+	}
+	s.ServiceID = own.ServiceID
+	s.Location = own.Location
+
+	service := &runv2.GoogleCloudRunV2Service{}
+	if err := json.Unmarshal(body, service); err != nil {
+		return err
+	}
+	s.GoogleCloudRunV2Service = service
+	return nil
+}
+
+// AddTag puts a label on the service a create will make, which is how a run
+// tags what it creates.
+func (s *CloudRunServiceSpec) AddTag(key, value string) {
+	if s.GoogleCloudRunV2Service == nil {
+		return
+	}
+	if s.Labels == nil {
+		s.Labels = map[string]string{}
+	}
+	s.Labels[key] = value
 }
 
 func (c *CloudRunServices) Create(ctx context.Context, scope Scope, spec CloudRunServiceSpec) (CloudRunService, error) {

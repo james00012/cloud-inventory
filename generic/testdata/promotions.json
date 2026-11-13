@@ -1,0 +1,4 @@
+{
+  "projects.locations.services": ["create", "delete"],
+  "instances": ["create", "delete"]
+}

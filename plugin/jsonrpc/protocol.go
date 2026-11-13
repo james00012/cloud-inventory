@@ -3,7 +3,11 @@
 // standard error, so a script can read the replies with jq.
 package jsonrpc
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/james00012/cloud-inventory/plugin/core"
+)
 
 // Version is the only value the jsonrpc field takes.
 const Version = "2.0"
@@ -51,7 +55,9 @@ const (
 // The methods a provider answers.
 const (
 	MethodConfigure      = "configure"
+	MethodDescribeTypes  = "describeTypes"
 	MethodDiscoverScopes = "discoverScopes"
+	MethodAudit          = "audit"
 	MethodList           = "list"
 	MethodGet            = "get"
 	MethodCreate         = "create"
@@ -64,6 +70,8 @@ const (
 type ConfigureParams struct {
 	Features      []string        `json:"features,omitempty"`
 	ExpectAccount string          `json:"expectAccount,omitempty"`
+	Caller        string          `json:"caller,omitempty"`
+	Run           string          `json:"run,omitempty"`
 	Scope         json.RawMessage `json:"scope,omitempty"`
 }
 
@@ -94,4 +102,12 @@ type DeleteParams struct {
 
 type ScopesResult struct {
 	Scopes []string `json:"scopes"`
+}
+
+type TypesResult struct {
+	Types []core.TypeInfo `json:"types"`
+}
+
+type AuditResult struct {
+	Entries []core.AuditEntry `json:"entries"`
 }

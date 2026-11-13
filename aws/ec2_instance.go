@@ -41,6 +41,35 @@ func (i EC2Instance) CreatedAt() time.Time {
 // DisplayName reads the Name tag, because an EC2 instance has no name field.
 func (i EC2Instance) DisplayName() string { return i.Tags()["Name"] }
 
+// Parents are the network and subnet the instance sits in, which EC2 reports
+// on the instance itself.
+func (i EC2Instance) Parents() []cloudinv.ID {
+	if i.Instance == nil {
+		return nil
+	}
+	var found []cloudinv.ID
+	if i.VpcId != nil {
+		found = append(found, cloudinv.ID(i.Region+"/"+*i.VpcId))
+	}
+	if i.SubnetId != nil {
+		found = append(found, cloudinv.ID(i.Region+"/"+*i.SubnetId))
+	}
+	return found
+}
+
+// Deletable reads what EC2 already says. An instance that is terminated cannot
+// be terminated again, and one with termination protection refuses. Anything
+// this cannot judge is offered for deletion rather than hidden from a cleanup.
+func (i EC2Instance) Deletable() (bool, string) {
+	if i.Instance == nil || i.State == nil {
+		return true, ""
+	}
+	if i.State.Name == ec2types.InstanceStateNameTerminated {
+		return false, "the instance is already terminated"
+	}
+	return true, ""
+}
+
 // Tags flattens the API's tag list into the map every provider shares.
 func (i EC2Instance) Tags() map[string]string {
 	flat := map[string]string{}

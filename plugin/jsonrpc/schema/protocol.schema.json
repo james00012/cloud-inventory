@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gruntwork.io/cloud-inventory/protocol.schema.json",
+  "title": "Cloud inventory provider protocol",
+  "description": "Every message a provider and a host exchange. The schema is the contract: a provider in any language is one that speaks these messages.",
+
+  "oneOf": [{ "$ref": "#/$defs/request" }, { "$ref": "#/$defs/response" }],
+
+  "$defs": {
+    "id": { "type": "string", "minLength": 1 },
+
+    "request": {
+      "type": "object",
+      "required": ["jsonrpc", "method"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "type": "integer" },
+        "method": {
+          "enum": ["configure", "describeTypes", "discoverScopes", "audit",
+                   "list", "get", "create", "delete", "resource"]
+        },
+        "params": { "type": "object" }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "method": { "const": "configure" } }, "required": ["method"] },
+          "then": { "properties": { "params": { "$ref": "#/$defs/configureParams" } } } },
+        { "if": { "properties": { "method": { "const": "list" } }, "required": ["method"] },
+          "then": { "properties": { "params": { "$ref": "#/$defs/listParams" } } } },
+        { "if": { "properties": { "method": { "const": "get" } }, "required": ["method"] },
+          "then": { "properties": { "params": { "$ref": "#/$defs/getParams" } } } },
+        { "if": { "properties": { "method": { "const": "delete" } }, "required": ["method"] },
+          "then": { "properties": { "params": { "$ref": "#/$defs/deleteParams" } } } },
+        { "if": { "properties": { "method": { "const": "resource" } }, "required": ["method"] },
+          "then": { "properties": { "params": { "$ref": "#/$defs/resource" } },
+                    "not": { "required": ["id"] } } }
+      ]
+    },
+
+    "response": {
+      "type": "object",
+      "required": ["jsonrpc"],
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "type": "integer" },
+        "result": {},
+        "error": { "$ref": "#/$defs/error" }
+      },
+      "additionalProperties": false,
+      "not": { "required": ["result", "error"] }
+    },
+
+    "error": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "type": "integer" },
+        "message": { "type": "string" },
+        "kind": { "enum": ["notEnabled", "notFound", "throttled", "denied", "apiDisabled"] }
+      },
+      "additionalProperties": false
+    },
+
+    "configureParams": {
+      "type": "object",
+      "properties": {
+        "features": { "type": "array", "items": { "enum": ["read", "create", "delete"] } },
+        "expectAccount": { "type": "string" },
+        "caller": { "type": "string" },
+        "run": { "type": "string" },
+        "scope": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+
+    "listParams": {
+      "type": "object",
+      "properties": {
+        "scope": { "type": "object" },
+        "withFullData": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+
+    "getParams": {
+      "type": "object",
+      "required": ["id"],
+      "properties": { "id": { "$ref": "#/$defs/id" }, "withFullData": { "type": "boolean" } },
+      "additionalProperties": false
+    },
+
+    "deleteParams": {
+      "type": "object",
+      "required": ["id"],
+      "properties": { "id": { "$ref": "#/$defs/id" } },
+      "additionalProperties": false
+    },
+
+    "resource": {
+      "type": "object",
+      "required": ["id", "type", "deletable"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "type": { "type": "string", "minLength": 1 },
+        "displayName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "tags": { "type": "object", "additionalProperties": { "type": "string" } },
+        "parents": { "type": "array", "items": { "$ref": "#/$defs/id" } },
+        "deletable": { "type": "boolean" },
+        "notDeletable": { "type": "string" },
+        "fullData": {}
+      },
+      "additionalProperties": false
+    },
+
+    "listing": {
+      "type": "object",
+      "required": ["asked"],
+      "properties": {
+        "resources": { "type": "array", "items": { "$ref": "#/$defs/resource" } },
+        "gaps": { "type": "array", "items": { "$ref": "#/$defs/gap" } },
+        "asked": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+
+    "gap": {
+      "type": "object",
+      "required": ["scope", "fault"],
+      "properties": {
+        "scope": { "type": "string" },
+        "fault": { "type": "string" },
+        "message": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+
+    "typeInfo": {
+      "type": "object",
+      "required": ["type", "operations"],
+      "properties": {
+        "type": { "type": "string", "minLength": 1 },
+        "operations": { "type": "array", "items": { "enum": ["list", "get", "create", "delete"] } },
+        "scopeFields": { "type": "array", "items": { "type": "string" } },
+        "deleteBefore": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+
+    "auditEntry": {
+      "type": "object",
+      "required": ["at", "caller", "action", "account", "outcome"],
+      "properties": {
+        "at": { "type": "string", "format": "date-time" },
+        "caller": { "type": "string" },
+        "action": { "enum": ["create", "delete"] },
+        "resource": { "type": "string" },
+        "account": { "type": "string" },
+        "run": { "type": "string" },
+        "outcome": { "type": "string" },
+        "error": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

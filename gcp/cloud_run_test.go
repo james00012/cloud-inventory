@@ -361,3 +361,34 @@ func TestServiceIDMatchesTheIDAListingReturns(t *testing.T) {
 		t.Fatalf("a listing returned %q but the constructor builds %q", listed.ResourceID(), want)
 	}
 }
+
+// TestASpecSurvivesJSON pins the reason this type carries its own marshalling.
+// The embedded body is a Google generated struct with its own MarshalJSON,
+// which Go promotes, so without these methods a spec crossing a process
+// boundary loses ServiceID and Location without any error at all.
+func TestASpecSurvivesJSON(t *testing.T) {
+	spec := CloudRunServiceSpec{
+		ServiceID: "api",
+		Location:  "us-central1",
+		GoogleCloudRunV2Service: &runv2.GoogleCloudRunV2Service{
+			Labels: map[string]string{"env": "demo"},
+			Template: &runv2.GoogleCloudRunV2RevisionTemplate{
+				Containers: []*runv2.GoogleCloudRunV2Container{{Image: "gcr.io/demo/api:1"}},
+			},
+		},
+	}
+
+	body, err := json.Marshal(spec)
+	require.NoError(t, err)
+
+	var back CloudRunServiceSpec
+	require.NoError(t, json.Unmarshal(body, &back))
+
+	assert.Equal(t, "api", back.ServiceID)
+	assert.Equal(t, "us-central1", back.Location)
+	require.NotNil(t, back.GoogleCloudRunV2Service)
+	assert.Equal(t, map[string]string{"env": "demo"}, back.Labels)
+	require.NotNil(t, back.Template)
+	require.Len(t, back.Template.Containers, 1)
+	assert.Equal(t, "gcr.io/demo/api:1", back.Template.Containers[0].Image)
+}

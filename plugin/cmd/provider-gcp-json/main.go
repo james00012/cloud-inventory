@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 
+	cloudinv "github.com/james00012/cloud-inventory"
+
 	"github.com/james00012/cloud-inventory/gcp"
 	"github.com/james00012/cloud-inventory/plugin/core"
 	"github.com/james00012/cloud-inventory/plugin/jsonrpc"
@@ -46,6 +48,24 @@ func main() {
 		Getter:  cloudRun,
 		Deleter: cloudRun,
 		Creator: cloudRun,
+
+		// What this provider offers, which a tool reads to plan a run.
+		Declares: []core.TypeInfo{{
+			Type:        "cloud-run-service",
+			Operations:  []string{"list", "get", "create", "delete"},
+			ScopeFields: []string{"ProjectID", "Locations"},
+		}},
+
+		// What a create would make, which is what lets a retried create answer
+		// with the first one's resource.
+		Identify: func(scope gcp.Scope, spec gcp.CloudRunServiceSpec) (cloudinv.ID, bool) {
+			if scope.ProjectID == "" || spec.Location == "" || spec.ServiceID == "" {
+				return "", false
+			}
+			return gcp.ServiceID(scope.ProjectID, spec.Location, spec.ServiceID), true
+		},
+
+		RunTagKey: "cloud-inventory-run",
 
 		Account: func(context.Context) (string, error) { return project, nil },
 

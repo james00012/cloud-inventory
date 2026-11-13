@@ -15,7 +15,13 @@
         "project",
         "zone"
       ],
-      "paged": true
+      "paged": true,
+      "operations": [
+        "list",
+        "get",
+        "create",
+        "delete"
+      ]
     }
   }
 }

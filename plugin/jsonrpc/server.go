@@ -16,8 +16,10 @@ import (
 // Serving is what a transport needs from the contract, which is every call the
 // protocol offers.
 type Serving interface {
-	Configure(ctx context.Context, features []core.Feature, expectAccount string) ([]core.Feature, string, error)
+	Configure(ctx context.Context, features []core.Feature, session core.Session) ([]core.Feature, string, error)
+	DescribeTypes(ctx context.Context) ([]core.TypeInfo, error)
 	DiscoverScopes(ctx context.Context) ([]string, error)
+	Audit(ctx context.Context) ([]core.AuditEntry, error)
 	List(ctx context.Context, scope []byte, withFullData bool, emit func(core.Resource) error) (core.Listing, error)
 	Get(ctx context.Context, id cloudinv.ID, withFullData bool) (core.Resource, error)
 	Create(ctx context.Context, scope, spec []byte, withFullData bool) (core.Resource, error)
@@ -91,7 +93,9 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 		for _, f := range params.Features {
 			features = append(features, core.Feature(f))
 		}
-		granted, account, err := s.service.Configure(ctx, features, params.ExpectAccount)
+		granted, account, err := s.service.Configure(ctx, features, core.Session{
+			Caller: params.Caller, Run: params.Run, ExpectAccount: params.ExpectAccount,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -100,6 +104,20 @@ func (s *Server) dispatch(ctx context.Context, request Request) (any, error) {
 			names = append(names, string(f))
 		}
 		return ConfigureResult{Granted: names, Account: account}, nil
+
+	case MethodDescribeTypes:
+		found, err := s.service.DescribeTypes(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return TypesResult{Types: found}, nil
+
+	case MethodAudit:
+		entries, err := s.service.Audit(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return AuditResult{Entries: entries}, nil
 
 	case MethodDiscoverScopes:
 		found, err := s.service.DiscoverScopes(ctx)

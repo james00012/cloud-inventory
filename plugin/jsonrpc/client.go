@@ -20,6 +20,7 @@ type Session struct {
 	stdin   io.WriteCloser
 	lines   *bufio.Scanner
 
+	wire    func(string, []byte)
 	mu      sync.Mutex
 	next    int
 	granted []string
@@ -39,11 +40,20 @@ type Options struct {
 	// ExpectAccount is the account the host believes it is pointed at.
 	ExpectAccount string
 
+	// Caller names the tool, which every audit entry records, and Run
+	// identifies this run, which everything created carries as a tag.
+	Caller string
+	Run    string
+
 	// Scope is the provider's own scope value.
 	Scope any
 
 	// Stderr receives the provider's logs, which never mix with the protocol.
 	Stderr io.Writer
+
+	// Wire, when set, receives a copy of every line in both directions, which
+	// is how a test checks the messages against the protocol's schema.
+	Wire func(direction string, line []byte)
 }
 
 // Start runs the provider and configures the session, or fails without one.
@@ -66,7 +76,7 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 	lines := bufio.NewScanner(stdout)
 	lines.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
-	session := &Session{command: command, stdin: stdin, lines: lines}
+	session := &Session{command: command, stdin: stdin, lines: lines, wire: opts.Wire}
 
 	features := make([]string, 0, len(opts.Features))
 	for _, f := range opts.Features {
@@ -80,7 +90,8 @@ func Start(ctx context.Context, opts Options) (*Session, error) {
 
 	var answer ConfigureResult
 	if err := session.call(MethodConfigure, ConfigureParams{
-		Features: features, ExpectAccount: opts.ExpectAccount, Scope: scope,
+		Features: features, ExpectAccount: opts.ExpectAccount,
+		Caller: opts.Caller, Run: opts.Run, Scope: scope,
 	}, &answer, nil); err != nil {
 		session.Close()
 		return nil, fmt.Errorf("configuring the session: %w", err)
@@ -99,6 +110,25 @@ func (s *Session) Close() error {
 
 func (s *Session) Account() string   { return s.account }
 func (s *Session) Granted() []string { return s.granted }
+
+// DescribeTypes reads what the provider declares, which is how a tool learns
+// the delete order without knowing the cloud.
+func (s *Session) DescribeTypes() ([]core.TypeInfo, error) {
+	var answer TypesResult
+	if err := s.call(MethodDescribeTypes, nil, &answer, nil); err != nil {
+		return nil, err
+	}
+	return answer.Types, nil
+}
+
+// Audit reads back every create and delete this session made.
+func (s *Session) Audit() ([]core.AuditEntry, error) {
+	var answer AuditResult
+	if err := s.call(MethodAudit, nil, &answer, nil); err != nil {
+		return nil, err
+	}
+	return answer.Entries, nil
+}
 
 func (s *Session) DiscoverScopes() ([]string, error) {
 	var answer ScopesResult
@@ -169,12 +199,14 @@ func (s *Session) call(method string, params any, into any, stream func(core.Res
 	if err != nil {
 		return err
 	}
+	s.tap("sent", request)
 	if _, err := s.stdin.Write(append(request, '\n')); err != nil {
 		return fmt.Errorf("writing to the provider: %w", err)
 	}
 
 	for s.lines.Scan() {
 		line := s.lines.Bytes()
+		s.tap("received", line)
 
 		// A message with no id is a streamed resource, not the reply.
 		var notification Request
@@ -211,6 +243,13 @@ func (s *Session) call(method string, params any, into any, stream func(core.Res
 		return err
 	}
 	return fmt.Errorf("the provider stopped before answering %s", method)
+}
+
+func (s *Session) tap(direction string, line []byte) {
+	if s.wire == nil {
+		return
+	}
+	s.wire(direction, append([]byte(nil), line...))
 }
 
 func raw(v any) (json.RawMessage, error) {
