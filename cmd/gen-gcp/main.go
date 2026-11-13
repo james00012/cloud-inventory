@@ -160,7 +160,7 @@ func describe(doc *discovery, methods map[string]method, path string) (generic.D
 	// selfLink is, since it is the only self-contained address the API offers.
 	identity := ""
 	switch {
-	case len(requiredPathParams(get)) == 1 && strings.Contains(get.Path, "{+name}"):
+	case len(requiredParams(get, "path")) == 1 && strings.Contains(get.Path, "{+name}"):
 		identity = "name"
 	case hasProperty(item, "selfLink"):
 		identity = "selfLink"
@@ -182,7 +182,8 @@ func describe(doc *discovery, methods map[string]method, path string) (generic.D
 		IdentityField: identity,
 		CreatedField:  firstPresent(item, createdFields),
 		LabelsField:   firstPresent(item, labelFields),
-		ScopeParams:   requiredPathParams(list),
+		ScopeParams:   requiredParams(list, "path"),
+		ScopeQuery:    requiredParams(list, "query"),
 		Paged:         hasParam(list, "pageToken"),
 
 		// A new type is list-only. Promotion is a reviewed change, recorded in
@@ -243,10 +244,12 @@ func firstPresent(item *schema, candidates []string) string {
 	return ""
 }
 
-func requiredPathParams(m method) []string {
+// requiredParams are the parameters a call must be given at one location, so a
+// scope can be built whether the API takes it in the path or the query.
+func requiredParams(m method, location string) []string {
 	var found []string
 	for name, spec := range m.Parameters {
-		if spec.Required && spec.Location == "path" {
+		if spec.Required && spec.Location == location {
 			found = append(found, name)
 		}
 	}

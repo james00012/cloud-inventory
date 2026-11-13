@@ -253,3 +253,70 @@ func TestAPromotedTypeCanDelete(t *testing.T) {
 		t.Fatalf("a promoted type offers %v", d.Operations)
 	}
 }
+
+// TestBucketsFromAGeneratedDescriptor drives an API that names the project in
+// the query rather than the path, which is the third way Google expresses a
+// scope and the one that made this descriptor incomplete before.
+func TestBucketsFromAGeneratedDescriptor(t *testing.T) {
+	var asked []string
+	deleted := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodDelete {
+			deleted = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		bucket := map[string]any{
+			"name":        "demo-assets",
+			"timeCreated": "2026-11-01T00:00:00Z",
+			"labels":      map[string]any{"env": "demo"},
+			"location":    "US",
+			"selfLink":    "http://" + r.Host + "/b/demo-assets",
+		}
+		if strings.HasSuffix(r.URL.Path, "/b") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{bucket}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(bucket)
+	}))
+	defer server.Close()
+
+	client := &Client{BaseURL: server.URL, Descriptor: load(t, "storage-v1.json", "buckets")}
+	ctx := context.Background()
+
+	found, incomplete, err := client.List(ctx, Scope{"project": {"demo"}})
+	if err != nil || incomplete.Any() {
+		t.Fatalf("listing: %v %v", err, incomplete.String())
+	}
+	if len(found) != 1 {
+		t.Fatalf("listed %d", len(found))
+	}
+
+	// The project reached the API as a query parameter, which is the whole
+	// point of this case.
+	if !strings.Contains(asked[0], "project=demo") {
+		t.Fatalf("the scope did not reach the API: %v", asked)
+	}
+
+	one := found[0]
+	if one.DisplayName() != "demo-assets" {
+		t.Fatalf("display name %q", one.DisplayName())
+	}
+	if one.CreatedAt().IsZero() {
+		t.Fatal("no creation time")
+	}
+	if one.Tags()["env"] != "demo" {
+		t.Fatalf("tags %v", one.Tags())
+	}
+
+	if err := client.Delete(ctx, one.ResourceID()); err != nil {
+		t.Fatalf("deleting: %v", err)
+	}
+	if deleted != "/b/demo-assets" {
+		t.Fatalf("deleted %q", deleted)
+	}
+}

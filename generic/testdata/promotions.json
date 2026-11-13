@@ -1,4 +1,8 @@
 {
   "projects.locations.services": ["create", "delete"],
-  "instances": ["create", "delete"]
+  "projects.locations.repositories": ["create", "delete"],
+  "projects.locations.functions": ["create", "delete"],
+  "instances": ["create", "delete"],
+  "buckets": ["create", "delete"],
+  "projects.topics": ["create", "delete"]
 }

@@ -34,9 +34,12 @@ type Descriptor struct {
 	CreatedField  string `json:"createdField,omitempty"`
 	LabelsField   string `json:"labelsField,omitempty"`
 
-	// ScopeParams are the path parameters a list must be given, which is the
-	// shape of a scope for this type.
+	// ScopeParams are the path parameters a list must be given, and ScopeQuery
+	// the query parameters it must be given. Together they are the shape of a
+	// scope for this type: some APIs name the project in the path, some in the
+	// query, and a caller should not have to know which.
 	ScopeParams []string `json:"scopeParams"`
+	ScopeQuery  []string `json:"scopeQuery,omitempty"`
 
 	// CreateQuery is the query parameter a create takes the new name in, where
 	// the API does not take it in the body.
@@ -112,7 +115,13 @@ func (r Resource) Tags() map[string]string {
 	return flat
 }
 
-// Scope is what a caller names: the path parameters this type's list requires,
+// scopeFields is every parameter a list must be given, however the API takes
+// it.
+func (d Descriptor) scopeFields() []string {
+	return append(append([]string{}, d.ScopeParams...), d.ScopeQuery...)
+}
+
+// Scope is what a caller names: the parameters this type's list requires,
 // and the values to try for each. One value each is the common case; a list
 // that fans out names several.
 type Scope map[string][]string
@@ -130,7 +139,7 @@ var _ cloudinv.Resource = Resource{}
 // List reads every resource in each combination of the scope's parameters, and
 // reports the combinations it could not read rather than leaving them out.
 func (c *Client) List(ctx context.Context, scope Scope) ([]Resource, cloudinv.Incomplete, error) {
-	parts, err := combinations(c.Descriptor.ScopeParams, scope)
+	parts, err := combinations(c.Descriptor.scopeFields(), scope)
 	if err != nil {
 		return nil, cloudinv.Incomplete{}, err
 	}
@@ -150,6 +159,11 @@ func (c *Client) listIn(ctx context.Context, values map[string]string) ([]Resour
 			return nil, err
 		}
 		query := url.Values{}
+		for _, field := range c.Descriptor.ScopeQuery {
+			if value, ok := values[field]; ok {
+				query.Set(field, value)
+			}
+		}
 		if token != "" {
 			query.Set("pageToken", token)
 		}
@@ -226,7 +240,7 @@ func (c *Client) Create(ctx context.Context, scope Scope, spec Spec) (Resource, 
 		return Resource{}, fmt.Errorf("%s is list-only: adding create to it is a reviewed change", c.Descriptor.Type)
 	}
 
-	values, err := single(c.Descriptor.ScopeParams, scope)
+	values, err := single(c.Descriptor.scopeFields(), scope)
 	if err != nil {
 		return Resource{}, err
 	}
@@ -236,6 +250,11 @@ func (c *Client) Create(ctx context.Context, scope Scope, spec Spec) (Resource, 
 	}
 
 	query := url.Values{}
+	for _, field := range c.Descriptor.ScopeQuery {
+		if value, ok := values[field]; ok {
+			query.Set(field, value)
+		}
+	}
 	if c.Descriptor.CreateQuery != "" && spec.Name != "" {
 		query.Set(c.Descriptor.CreateQuery, spec.Name)
 	}
